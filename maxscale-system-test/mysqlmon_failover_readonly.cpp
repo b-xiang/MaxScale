@@ -157,9 +157,57 @@ int main(int argc, char** argv)
         generate_traffic_and_check(test, maxconn, 2);
     }
 
+    // Intermission, quit if a test step failed.
+    if (test.ok())
+    {
+        // Some of the following tests depend on manipulating backends during the same monitor tick or
+        // between ticks. Slow down the monitor to make this more likely. Not fool-proof in the slightest.
+        int rval = test.maxscales->execute_maxadmin_command(0, "alter monitor MariaDB-Monitor "
+                                                               "monitor_interval=3");
+        test.expect(rval == 0, "MaxAdmin command failed.");
+    }
     
-
-    
+    if (test.ok())
+    {
+        
+        cout << "Step 5: Master crashes but comes back during the next loop,"
+                " slave 1 should be promoted, old master rejoined.\n";
+        crash_node(0);
+        mon_wait(1); // The timing is probably a bit iffy here.
+        get_output(test);
+        test.repl->start_node(0, "");
+        mon_wait(2);
+        get_output(test);
+        // Slave 2 could be promoted as well, but in this case there is no reason to choose it. 
+        expect_server_status_multi({slave, master, slave});
+        expect_read_only_multi({true, false, true});
+        generate_traffic_and_check(test, maxconn, 5);
+        
+        cout << "Step 6: Servers 1 & 3 go down. Server 2 should remain as master.\n";
+        test.repl->stop_node(0);
+        test.repl->stop_node(2);
+        mon_wait(1);
+        get_output(test);
+        expect_server_status_multi({down, master, down});
+        generate_traffic_and_check(test, maxconn, 5);
+        
+        cout << "Step 6.1: Servers 1 & 3 come back. Check that read_only is set.\n";
+        test.repl->start_node(2, "");
+        test.repl->start_node(0, "");
+        mon_wait(2);
+        get_output(test);
+        expect_server_status_multi({slave, master, slave});
+        expect_read_only_multi({true, false, true});
+        generate_traffic_and_check(test, maxconn, 5);
+        
+        cout << "Step 7: Servers 1 & 2 go down. Check that 3 is promoted.\n";
+        test.repl->stop_node(0);
+        test.repl->stop_node(1);
+        mon_wait(2);
+        get_output(test);
+        expect_server_status_multi({down, down, master});
+        generate_traffic_and_check(test, maxconn, 5);
+    }
     
     mysql_close(maxconn);
     // Start the servers, in case they weren't on already.
